@@ -13,10 +13,6 @@ from elevenlabs import play
 
 import pyaudio
 
-import tkinter as tk
-from PIL import Image, ImageTk, ImageSequence
-import threading
-
 load_dotenv()
 
 chat_api = os.getenv('chat_api')
@@ -39,66 +35,6 @@ stt_model = ElevenLabs(
 conversation_history = [
     {"role": "system", "content": "You are BMO from Adventure Time. Answer within one or three sentences. Write BMO as beemo"}
 ]
-
-class BMOGUI:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("BMO")
-        self.root.geometry("800x480")
-        self.label = tk.Label(root)
-        self.label.pack()
-
-        # Load images
-        self.idle_img = Image.open("./assets/bmo_idle.jpeg")
-        self.hear_img = Image.open("./assets/BMO_hear.jpeg")
-        self.talk_gif = [ImageTk.PhotoImage(img) for img in ImageSequence.Iterator(Image.open("./assets/BMO_talk.gif"))]
-        self.blink_gif = [ImageTk.PhotoImage(img) for img in ImageSequence.Iterator(Image.open("./assets/bmo_blink.gif"))]
-
-        self.current_state = "idle"
-        self.blink_index = 0
-        self.talk_index = 0
-        self.after_id = None
-
-        self.show_idle()
-
-    def show_image(self, image):
-        if isinstance(image, list):  # GIF
-            def update_frame(index):
-                self.label.config(image=image[index])
-                index = (index + 1) % len(image)
-                self.after_id = self.root.after(100, update_frame, index)
-            update_frame(0)
-        else:  # Static image
-            tk_image = ImageTk.PhotoImage(image)
-            self.label.config(image=tk_image)
-            self.label.image = tk_image  # Keep reference
-
-    def show_idle(self):
-        if self.current_state != "idle":
-            return
-        self.show_image(self.idle_img)
-        self.root.after(10000, self.show_blink)
-
-    def show_blink(self):
-        if self.current_state != "idle":
-            return
-        self.show_image(self.blink_gif)
-
-    def show_hear(self):
-        self.current_state = "hearing"
-        if self.after_id:
-            self.root.after_cancel(self.after_id)
-        self.show_image(self.hear_img)
-
-    def show_talk(self):
-        self.current_state = "talking"
-        if self.after_id:
-            self.root.after_cancel(self.after_id)
-        self.show_image(self.talk_gif)
-
-    def reset_state(self):
-        self.current_state = "idle"
-        self.root.after(1000, self.show_idle)
 
 class MicrophoneStream:
     """Opens a recording stream as a generator yielding the audio chunks."""
@@ -210,7 +146,7 @@ class MicrophoneStream:
             yield b"".join(data)
 
 
-def listen_print_loop(responses: object, stream, bmo_gui) -> str:
+def listen_print_loop(responses: object, stream) -> str:
     """Iterates through server responses and prints them.
 
     The responses passed is a generator that will block until a response
@@ -261,7 +197,6 @@ def listen_print_loop(responses: object, stream, bmo_gui) -> str:
 
         else:
             print(transcript + overwrite_chars)
-            bmo_gui.root.after(0, bmo_gui.show_hear)
 
             print("Finished: {}".format(result.is_final))
             print("transcript: {}".format(transcript))
@@ -269,7 +204,7 @@ def listen_print_loop(responses: object, stream, bmo_gui) -> str:
             if transcript.strip():
                 stream.pause()  # Pause microphone before TTS
                 try:
-                    bmo_live(transcript, bmo_gui)  # Pass stream to bmo_live
+                    bmo_live(transcript)  # Pass stream to bmo_live
                 finally:
                     stream.resume()  # Resume after playback
 
@@ -284,78 +219,67 @@ def listen_print_loop(responses: object, stream, bmo_gui) -> str:
     return transcript
 
 
-def bmo_live(prompt: str, bmo_gui) -> str:
+def bmo_live(prompt: str) -> str:
     conversation_history.append({"role": "user", "content": prompt})
 
     completion = chat_model.chat.completions.create(
-        model="qwen-turbo", # This example uses qwen-plus. You can change the model name as needed. Model list: https://www.alibabacloud.com/help/en/model-studio/getting-started/models
-        messages=conversation_history
-    )
-
+        model="qwen-plus", # This example uses qwen-plus. You can change the model name as needed. Model list: https://www.alibabacloud.com/help/en/model-studio/getting-started/models
+        messages=[
+            {"role": "system", "content": "You are BMO from Adventure Time. Answer within one or three sentences. Write BMO as beemo"},
+            {"role": "user", "content": prompt}],
+        )
+    
     response_text = completion.choices[0].message.content
     conversation_history.append({"role": "assistant", "content": response_text})
     
-    try:
-        audio = stt_model.text_to_speech.convert(
-            text=response_text,
-            voice_id="rlXaZVdGONSoTrswEcFe",
-            model_id="eleven_multilingual_v2",
-            output_format="mp3_44100_128",
-            voice_settings={
-                "stability": 0.75,
-                "similarity_boost": 1,
-                "style": 0.5,
-                "speed": 1,
-            }
-        )
-        print(response_text)
-        bmo_gui.root.after(0, bmo_gui.show_talk)
-        play(audio)
-    finally:
-        bmo_gui.root.after(0, bmo_gui.reset_state)
+    
+    audio = stt_model.text_to_speech.convert(
+        text=response_text,
+        voice_id="rlXaZVdGONSoTrswEcFe",
+        model_id="eleven_multilingual_v2",
+        output_format="mp3_44100_128",
+        voice_settings={
+            "stability": 0.5,
+            "similarity_boost": 1,
+            "style": 0.2,
+            "speed": 1,
+        }
+    )
+    print(response_text)
+    play(audio)
 
 
 def main() -> None:
-    root = tk.Tk()
-    bmo_gui = BMOGUI(root)
+    """Transcribe speech from audio file."""
+    # See http://g.co/cloud/speech/docs/languages
+    # for a list of supported languages.
+    language_code = "en-US"  # a BCP-47 language tag
 
-    def start_recognition():
-        """Transcribe speech from audio file."""
-        # See http://g.co/cloud/speech/docs/languages
-        # for a list of supported languages.
-        language_code = "en-US"  # a BCP-47 language tag
+    client = speech.SpeechClient()
+    config = speech.RecognitionConfig(
+        encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
+        sample_rate_hertz=RATE,
+        language_code=language_code,
+    )
 
-        client = speech.SpeechClient()
-        config = speech.RecognitionConfig(
-            encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
-            sample_rate_hertz=RATE,
-            language_code=language_code,
-        )
-
-        streaming_config = speech.StreamingRecognitionConfig(
-            config=config, interim_results=True,
-        )
-
-        with MicrophoneStream(RATE, CHUNK) as stream:
-            audio_generator = stream.generator()
-            requests = (
-                speech.StreamingRecognizeRequest(audio_content=content)
-                for content in audio_generator
-            )
-
-            responses = client.streaming_recognize(streaming_config, requests)
-
-            # Now, put the transcription responses to use.
-            listen_print_loop(responses, stream, bmo_gui)
-
+    streaming_config = speech.StreamingRecognitionConfig(
+        config=config, interim_results=True,
+    )
     
 
-     # Run speech recognition in a background thread
-    recognition_thread = threading.Thread(target=start_recognition, daemon=True)
-    recognition_thread.start()
 
-    # Run Tkinter mainloop in main thread (required on Windows)
-    root.mainloop()
+
+    with MicrophoneStream(RATE, CHUNK) as stream:
+        audio_generator = stream.generator()
+        requests = (
+            speech.StreamingRecognizeRequest(audio_content=content)
+            for content in audio_generator
+        )
+
+        responses = client.streaming_recognize(streaming_config, requests)
+
+        # Now, put the transcription responses to use.
+        listen_print_loop(responses, stream)
         
 
 
