@@ -1,4 +1,3 @@
-
 import queue
 import re
 import sys
@@ -33,7 +32,7 @@ stt_model = ElevenLabs(
 )
 
 conversation_history = [
-    {"role": "system", "content": "You are BMO from Adventure Time. Answer within one or three sentences. Write BMO as beemo"}
+    {"role": "system", "content": "You are BMO from Adventure Time. Answer within one or three sentences. Write BMO as b-mo"}
 ]
 
 class MicrophoneStream:

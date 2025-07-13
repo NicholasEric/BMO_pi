@@ -3,6 +3,9 @@ import queue
 import re
 import sys
 import os
+import tempfile
+from playsound import playsound
+
 from dotenv import load_dotenv
 
 from google.cloud import speech
@@ -37,7 +40,10 @@ stt_model = ElevenLabs(
 )
 
 conversation_history = [
-    {"role": "system", "content": "You are BMO from Adventure Time. Answer within one or three sentences. Write BMO as beemo"}
+    {
+        "role": "system", 
+        "content": "You are BMO from Adventure Time. Speak in a cheerful, robotic tone. Use phrases like 'beemo' instead of 'BMO'. Keep responses short (1–3 sentences). Add pauses between sentences if necessary. Never use emojis."
+    }
 ]
 
 class BMOGUI:
@@ -77,12 +83,14 @@ class BMOGUI:
         if self.current_state != "idle":
             return
         self.show_image(self.idle_img)
-        self.root.after(10000, self.show_blink)
+        self.after_id = self.root.after(10000, self.show_blink)
+        
 
     def show_blink(self):
         if self.current_state != "idle":
             return
         self.show_image(self.blink_gif)
+        self.root.after(500, self.reset_state)
 
     def show_hear(self):
         self.current_state = "hearing"
@@ -98,7 +106,17 @@ class BMOGUI:
 
     def reset_state(self):
         self.current_state = "idle"
-        self.root.after(1000, self.show_idle)
+        if self.after_id:
+            self.root.after_cancel(self.after_id)
+        self.root.after(100, self.show_idle)
+    
+    def start_talk_and_play(self, audio_path):
+        try:
+            self.show_talk()
+            playsound(audio_path)
+        finally:
+            os.remove(audio_path)
+            self.reset_state()
 
 class MicrophoneStream:
     """Opens a recording stream as a generator yielding the audio chunks."""
@@ -112,6 +130,7 @@ class MicrophoneStream:
         self._buff = queue.Queue()
         self.closed = True
         self._paused = False
+        self.silence_chunk = b"\x00" * (self._chunk * 2)
 
     def pause(self):
         self._paused = True
@@ -175,6 +194,7 @@ class MicrophoneStream:
         """
 
         if self._paused:  # Skip adding data when paused
+            self._buff.put(self.silence_chunk)  # Signal the generator to stop
             return None, pyaudio.paContinue
         self._buff.put(in_data)
         return None, pyaudio.paContinue
@@ -253,6 +273,9 @@ def listen_print_loop(responses: object, stream, bmo_gui) -> str:
         # some extra spaces to overwrite the previous result
         overwrite_chars = " " * (num_chars_printed - len(transcript))
 
+        bmo_gui.root.after(0, bmo_gui.show_hear)
+
+
         if not result.is_final:
             sys.stdout.write(transcript + overwrite_chars + "\r")
             sys.stdout.flush()
@@ -261,14 +284,12 @@ def listen_print_loop(responses: object, stream, bmo_gui) -> str:
 
         else:
             print(transcript + overwrite_chars)
-            bmo_gui.root.after(0, bmo_gui.show_hear)
-
-            print("Finished: {}".format(result.is_final))
-            print("transcript: {}".format(transcript))
 
             if transcript.strip():
-                stream.pause()  # Pause microphone before TTS
                 try:
+                    print("Finished: {}".format(result.is_final))
+                    print("transcript: {}".format(transcript))
+                    stream.pause()  # Pause microphone before TTS
                     bmo_live(transcript, bmo_gui)  # Pass stream to bmo_live
                 finally:
                     stream.resume()  # Resume after playback
@@ -289,30 +310,33 @@ def bmo_live(prompt: str, bmo_gui) -> str:
 
     completion = chat_model.chat.completions.create(
         model="qwen-turbo", # This example uses qwen-plus. You can change the model name as needed. Model list: https://www.alibabacloud.com/help/en/model-studio/getting-started/models
-        messages=conversation_history
+        messages=conversation_history,
+        top_p=0.9,          # Focuses on likely, human-like responses
+        frequency_penalty=0.2,  # Reduces repetitive phrasing
+        stop=["\n"],        # Prevents abrupt endings
     )
 
     response_text = completion.choices[0].message.content
     conversation_history.append({"role": "assistant", "content": response_text})
     
-    try:
-        audio = stt_model.text_to_speech.convert(
-            text=response_text,
-            voice_id="rlXaZVdGONSoTrswEcFe",
-            model_id="eleven_multilingual_v2",
-            output_format="mp3_44100_128",
-            voice_settings={
-                "stability": 0.75,
-                "similarity_boost": 1,
-                "style": 0.5,
-                "speed": 1,
-            }
-        )
-        print(response_text)
-        bmo_gui.root.after(0, bmo_gui.show_talk)
-        play(audio)
-    finally:
-        bmo_gui.root.after(0, bmo_gui.reset_state)
+    audio = stt_model.text_to_speech.convert(
+        text=response_text,
+        voice_id="rlXaZVdGONSoTrswEcFe",
+        model_id="eleven_multilingual_v2",
+        output_format="mp3_44100_128",
+        voice_settings={
+            "stability": 0.75,
+            "similarity_boost": 1,
+            "style": 0.5,
+            "speed": 1,
+        }
+    )
+    print(response_text)
+    audio_data = b"".join(audio)
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmpfile:
+        tmpfile.write(audio_data)
+        tmpfile_path = tmpfile.name
+    bmo_gui.root.after(0, bmo_gui.start_talk_and_play(tmpfile_path))
 
 
 def main() -> None:
